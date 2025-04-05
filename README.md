@@ -40,3 +40,15 @@ Crie um ambiente virtual e instale dependências:
 python -m venv env
 source env/bin/activate  # Windows: env\\Scripts\\activate
 pip install -r requirements.txt  # se existir
+```
+
+Abrindo o executável
+```bash
+Start-Process ".\Aprendizagem por reforço.exe" -ArgumentList "2037"
+```
+
+Inicializar o algoritmo dentro do executável, quando ele já estiver rodando
+```bash
+python client.py --episodes 1000 --port 2037
+
+```
