@@ -2,6 +2,7 @@ import numpy as np
 import random
 import time
 import socket
+import argparse
 from connection import connect, get_state_reward
 
 class QLearningAgent:
@@ -36,61 +37,96 @@ class QLearningAgent:
         max_next_q = np.max(self.q_table[next_state_idx])
         self.q_table[state_idx, action_idx] = current_q + self.alpha * (reward + self.gamma * max_next_q - current_q)
     
-    def train(self, socket_conn, episodes=1000):
-        """Executa o treinamento"""
+    def train(self, socket_conn, episodes, max_steps):
+        """Executa o treinamento com limite de steps e tratamento de falhas"""
+        total_success = 0
+
         for episode in range(episodes):
             try:
-                # Estado inicial
-                state_bin, reward = get_state_reward(socket_conn, "jump")  # Corrigido: socket_conn é o primeiro argumento
+                # Tenta obter estado inicial
+                state_bin, reward = get_state_reward(socket_conn, "jump")
                 state_idx = self.state_to_index(state_bin)
-                
-                terminal = False
-                while not terminal:
-                    # Escolhe e executa ação
+                episode_success = False
+                for step in range(max_steps):
                     action = self.choose_action(state_idx)
-                    next_state_bin, reward = get_state_reward(socket_conn, action)  # Corrigido: socket_conn é o primeiro argumento
+
+                    try:
+                        next_state_bin, reward = get_state_reward(socket_conn, action)
+                    except Exception as e:
+                        print(f"⚠️ Episódio {episode+1}, passo {step+1}: erro ao receber resposta -> {e}")
+                        break  # Interrompe o episódio atual, mas continua o loop de treino
+
                     next_state_idx = self.state_to_index(next_state_bin)
-                    
-                    # Atualiza Q-table
                     self.update_q_table(state_idx, action, reward, next_state_idx)
-                    
-                    # Verifica se chegou ao objetivo (plataforma 21)
-                    if next_state_bin.startswith('10101'):
-                        terminal = True
-                        print(f"Episódio {episode+1}: Objetivo alcançado!")
-                    
-                    # Atualiza estado
+                    # Dentro do loop de treino:
+                    # Primeiro ajusta a recompensa com base na progressão
+                    if action == "jump" and next_state_idx > state_idx:
+                        reward += 6
+                    if next_state_idx == state_idx:
+                        reward -= 1  # ou 0.5
+                    if next_state_idx > state_idx:
+                        reward += 5
+                    elif next_state_idx < state_idx:
+                        reward -= 0.5
+                    if next_state_bin == '0b0000000':
+                        reward = -20  # ou -30 no lugar de -100
+                        print(f"☠️ Episódio {episode+1}: morreu no passo {step+1}")
+                        break
+                    # se está na mesma plataforma, mas muda só direção — penaliza mais
+                    if state_bin[:5] == next_state_bin[:5] and state_bin[5:] != next_state_bin[5:]:
+                        reward -= 1.5  # penaliza ficar rodando no mesmo lugar
+
+                    # Depois atualiza a Q-table com a recompensa ajustada
+                    self.update_q_table(state_idx, action, reward, next_state_idx)
+
+                    if not episode_success and next_state_bin.startswith('10101'):
+                        print(f"🎉 Episódio {episode+1}: objetivo alcançado em {step+1} passos!")
+                        total_success += 1
+                        episode_success = True
+
                     state_idx = next_state_idx
-                    state_bin = next_state_bin
-                    
-                    # Pequena pausa
-                    time.sleep(0.01)
+                    print(f"[{episode+1}/{episodes}] step {step+1} | ação: {action} | estado: {next_state_bin} | recompensa: {reward}")
+
                 
-                if (episode + 1) % 100 == 0:
-                    print(f"Progresso: {episode+1}/{episodes} episódios")
-            
+                self.epsilon = max(0.01, self.epsilon * 0.98)
+
+
             except Exception as e:
-                print(f"Erro no episódio {episode+1}: {str(e)}")
-                break
-        
-    def save_q_table(self, filename="q_table.txt"):
-        """Salva Q-table no formato especificado"""
-        np.savetxt(filename, self.q_table, fmt='%.6f')
+                print(f"🚨 Falha no início do episódio {episode+1}: {e}")
+                continue  # pula para o próximo episódio
+            
+        if total_success > 0:
+            print(f"✅ {total_success} episódios chegaram ao objetivo final!")
+        else:
+            print("⚠️ Nenhum sucesso até o momento. Pode ser necessário mais episódios.")
+
+    def save_q_table(self, filename="q_tableTeste.txt"):
+        """Salva Q-table no formato correto da entrega"""
+        with open(filename, "w") as f:
+            for row in self.q_table:
+                f.write(" ".join(f"{q:.6f}" for q in row) + "\n")
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--episodes", type=int, default=1000, help="Número de episódios de treino")
+    parser.add_argument("--port", type=int, default=2037, help="Porta do servidor do jogo")
+    args = parser.parse_args()
+
     print("Iniciando cliente Q-Learning...")
-    
+
     try:
-        # Conecta ao jogo
-        print("Conectando na porta 2037...")
-        socket_conn = connect(2037)
+        print(f"Conectando na porta {args.port}...")
+        socket_conn = connect(args.port)
+
+        if not socket_conn:
+            print("🚫 Não foi possível conectar ao jogo. Encerrando.")
+            return
         
-        # Treina agente
         agent = QLearningAgent()
-        print("Iniciando treinamento...")
-        agent.train(socket_conn, episodes=1000)
+        print(f"Iniciando treinamento por {args.episodes} episódios...")
+        agent.train(socket_conn, episodes=args.episodes, max_steps=150)
+
         
-        # Salva resultados
         agent.save_q_table()
         print("Q-table salva em q_table.txt")
     
